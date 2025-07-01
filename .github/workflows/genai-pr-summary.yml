@@ -1,0 +1,43 @@
+name: PR Summary with OpenAI
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  summarize-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get PR diff
+      run: |
+        echo "Fetching diff..."
+        gh pr diff ${{ github.event.pull_request.number }} > pr.diff
+
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Summarize with OpenAI
+      run: |
+        DIFF=$(cat pr.diff | head -c 4000)  # limit to 4000 chars for token budget
+
+        echo "Calling OpenAI to summarize diff..."
+
+        RESPONSE=$(curl https://api.openai.com/v1/chat/completions \
+          -s \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+          -d "{
+            \"model\": \"gpt-4o\",
+            \"messages\": [
+              {\"role\": \"system\", \"content\": \"You are a code reviewer that summarizes pull requests.\"},
+              {\"role\": \"user\", \"content\": \"Summarize the following PR diff:\n\n$DIFF\"}
+            ],
+            \"temperature\": 0.5
+          }")
+
+        echo "Summary from OpenAI:"
+        echo "$RESPONSE" | jq -r '.choices[0].message.content'
