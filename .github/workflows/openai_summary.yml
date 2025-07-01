@@ -1,0 +1,63 @@
+name: GenAI Contributor Summary for All Repos
+
+on:
+  workflow_dispatch:
+
+jobs:
+  summarize-all:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install GitHub CLI & jq
+      run: |
+        sudo apt-get install jq -y
+        echo "machine github.com login ${{ secrets.GH_ADMIN_TOKEN }}" > ~/.netrc
+
+    - name: Get all repositories
+      run: |
+        echo "Fetching all repositories for org/user..."
+        gh auth login --with-token <<< "${{ secrets.GH_ADMIN_TOKEN }}"
+        gh repo list your-org-name --limit 1000 --json name,sshUrl -q '.[] | .sshUrl' > repos.txt
+
+    - name: Clone and Summarize Repos
+      run: |
+        mkdir -p summaries
+
+        while read repo; do
+          REPO_NAME=$(basename "$repo" .git)
+          echo "Processing $REPO_NAME"
+          git clone --depth=1 "$repo" "$REPO_NAME" || continue
+          cd "$REPO_NAME"
+          
+          git log --pretty=format:"%an <%ae>" | sort | uniq -c | sort -nr > ../summaries/${REPO_NAME}_contributors.txt
+          cd ..
+          rm -rf "$REPO_NAME"
+        done < repos.txt
+
+    - name: Call OpenAI for Summary
+      run: |
+        echo "" > openai_summary.md
+
+        for file in summaries/*_contributors.txt; do
+          REPO=$(basename "$file" _contributors.txt)
+          DATA=$(cat "$file" | head -c 4000)  # limit per repo
+          echo "Summarizing $REPO..."
+
+          SUMMARY=$(curl https://api.openai.com/v1/chat/completions \
+            -s \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+            -d "{
+              \"model\": \"gpt-4o\",
+              \"messages\": [
+                {\"role\": \"system\", \"content\": \"You are a data analyst summarizing GitHub repo contributor stats.\"},
+                {\"role\": \"user\", \"content\": \"Summarize contributors for repo: $REPO\\n$DATA\"}
+              ]
+            }" | jq -r '.choices[0].message.content')
+
+          echo "### $REPO" >> openai_summary.md
+          echo "$SUMMARY" >> openai_summary.md
+          echo -e "\n---\n" >> openai_summary.md
+        done
+
+    - name: Display Final Summary
+      run: cat openai_summary.md
