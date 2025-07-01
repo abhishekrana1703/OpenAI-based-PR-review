@@ -1,31 +1,28 @@
-name: PR Summary with OpenAI
+name: Run OpenAI Summary (Manual or PR)
 
 on:
+  workflow_dispatch:  # Enables manual trigger
   pull_request:
     types: [opened, synchronize]
 
 jobs:
-  summarize-pr:
+  summarize:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Get PR diff
+    - name: Get PR Diff
       run: |
-        echo "Fetching diff..."
+        echo "Fetching PR diff..."
         gh pr diff ${{ github.event.pull_request.number }} > pr.diff
-
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Summarize with OpenAI
+    - name: Call OpenAI to summarize
       run: |
-        DIFF=$(cat pr.diff | head -c 4000)  # limit to 4000 chars for token budget
-
-        echo "Calling OpenAI to summarize diff..."
-
+        DIFF=$(cat pr.diff | head -c 4000)
         RESPONSE=$(curl https://api.openai.com/v1/chat/completions \
           -s \
           -H "Content-Type: application/json" \
@@ -33,11 +30,9 @@ jobs:
           -d "{
             \"model\": \"gpt-4o\",
             \"messages\": [
-              {\"role\": \"system\", \"content\": \"You are a code reviewer that summarizes pull requests.\"},
-              {\"role\": \"user\", \"content\": \"Summarize the following PR diff:\n\n$DIFF\"}
-            ],
-            \"temperature\": 0.5
+              {\"role\": \"system\", \"content\": \"You are a senior code reviewer.\"},
+              {\"role\": \"user\", \"content\": \"Summarize this diff:\n$DIFF\"}
+            ]
           }")
 
-        echo "Summary from OpenAI:"
         echo "$RESPONSE" | jq -r '.choices[0].message.content'
