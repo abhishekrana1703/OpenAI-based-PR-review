@@ -1,63 +1,75 @@
-name: GenAI Contributor Summary for All Repos
+name: Summarize All Org Repos
 
 on:
   workflow_dispatch:
 
+env:
+  ORG_NAME: Connected-Ops  # <-- Change this to your GitHub org
+
 jobs:
-  summarize-all:
+  summarize:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Install GitHub CLI & jq
+    - name: Install CLI tools
       run: |
-        sudo apt-get install jq -y
-        echo "machine github.com login ${{ secrets.GH_ADMIN_TOKEN }}" > ~/.netrc
+        sudo apt-get update
+        sudo apt-get install -y jq gh
 
-    - name: Get all repositories
+    - name: Authenticate GitHub CLI
+      env:
+        GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
       run: |
-        echo "Fetching all repositories for org/user..."
-        gh auth login --with-token <<< "${{ secrets.GH_ADMIN_TOKEN }}"
-        gh repo list your-org-name --limit 1000 --json name,sshUrl -q '.[] | .sshUrl' > repos.txt
+        echo "${{ secrets.GH_ADMIN_TOKEN }}" | gh auth login --with-token
 
-    - name: Clone and Summarize Repos
+    - name: Get all repositories under org
       run: |
-        mkdir -p summaries
+        mkdir repos
+        cd repos
+        gh repo list "$ORG_NAME" --limit 1000 --json name,sshUrl -q '.[] | .sshUrl' > ../repo-list.txt
 
-        while read repo; do
-          REPO_NAME=$(basename "$repo" .git)
-          echo "Processing $REPO_NAME"
-          git clone --depth=1 "$repo" "$REPO_NAME" || continue
-          cd "$REPO_NAME"
-          
-          git log --pretty=format:"%an <%ae>" | sort | uniq -c | sort -nr > ../summaries/${REPO_NAME}_contributors.txt
-          cd ..
-          rm -rf "$REPO_NAME"
-        done < repos.txt
-
-    - name: Call OpenAI for Summary
+    - name: Clone and analyze each repo
       run: |
-        echo "" > openai_summary.md
+        mkdir summaries
+        while read REPO; do
+          REPO_NAME=$(basename "$REPO" .git)
+          echo "Cloning $REPO_NAME..."
+          git clone --depth=100 "$REPO" "repos/$REPO_NAME" || continue
+
+          cd "repos/$REPO_NAME"
+          git log --pretty=format:"%an <%ae>" | sort | uniq -c | sort -nr > "../../summaries/${REPO_NAME}_contributors.txt"
+          cd ../../
+        done < repo-list.txt
+
+    - name: Summarize with OpenAI
+      run: |
+        echo "# Contributor Summary for Org: $ORG_NAME" > openai_summary.md
 
         for file in summaries/*_contributors.txt; do
           REPO=$(basename "$file" _contributors.txt)
-          DATA=$(cat "$file" | head -c 4000)  # limit per repo
-          echo "Summarizing $REPO..."
+          DATA=$(cat "$file" | head -c 4000)
 
-          SUMMARY=$(curl https://api.openai.com/v1/chat/completions \
-            -s \
+          SUMMARY=$(curl -s https://api.openai.com/v1/chat/completions \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
             -d "{
               \"model\": \"gpt-4o\",
               \"messages\": [
-                {\"role\": \"system\", \"content\": \"You are a data analyst summarizing GitHub repo contributor stats.\"},
-                {\"role\": \"user\", \"content\": \"Summarize contributors for repo: $REPO\\n$DATA\"}
+                {\"role\": \"system\", \"content\": \"You are a senior GitHub analyst.\"},
+                {\"role\": \"user\", \"content\": \"Summarize commit and contributor data for repo $REPO:\n$DATA\"}
               ]
             }" | jq -r '.choices[0].message.content')
 
-          echo "### $REPO" >> openai_summary.md
+          echo "## $REPO" >> openai_summary.md
           echo "$SUMMARY" >> openai_summary.md
           echo -e "\n---\n" >> openai_summary.md
         done
 
-    - name: Display Final Summary
+    - name: Output Summary
       run: cat openai_summary.md
+
+    - name: Upload Summary as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openai-summary
+        path: openai_summary.md
